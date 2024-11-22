@@ -3,6 +3,14 @@ Annot2CFI
 
 A tool to convert annotations to CFI by searching the e-book. Easily portable any other e-reader or program than kobo and foliate (PR).
 
+Usage
+-----
+
+  node index.js <KoboReader.sqlite> # Kobo
+
+  node search-epub.js <mybook.epub> <query> # Shell Query (May be outdated)
+
+
 Algo
 ----
 
