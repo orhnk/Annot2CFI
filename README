@@ -1,0 +1,16 @@
+Annot2CFI
+========
+
+A tool to convert annotations to CFI by searching the e-book. Easily portable any other e-reader or program than kobo and foliate (PR).
+
+Algo
+----
+
+1. Generate CFI for each paragraph using epub-cfi-generator
+2. Search from the paragrahs and find the corresponding CFI
+
+
+Problems
+--------
+
+- The CFI generator used for this project is not fully compatible with foliate e-book reader program: CFI generator is treating every text node as /1 to be more specific.
