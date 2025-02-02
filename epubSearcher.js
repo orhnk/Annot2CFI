@@ -163,6 +163,23 @@ function findMatchWithOptionalSpaces(query, text) {
 
     if (cursor === normalizedQuery[query_idx]) {
       query_idx++;
+    } else if (cursor === normalizedQuery[0]) { // in some rare cases. Q: "hello" Txt: "h hello" can miss.
+      // NOTE: This is a dirty fix. It will only work for two character repeating texts.
+      // Q: "hello"
+      // T: "hell hello"
+      // will mismatch.
+      //
+      // The approach that may work is retrying to match the word after every mismatch (ETIRE PRHASE).
+      // I just fixed it currently as needed. If it becomes a problem, I will implement the above approach.
+      for (let i = text_idx; i > text_idx - 10; i++) { // Allow 10 characters of whitespace as a threshold
+        if (text[i].match(/\s/)) {
+          continue;
+        } else if (text[i] === normalizedQuery[0]) {
+          query_idx = 1;
+          text_idx = i;
+          break;
+        }
+      }
     } else if (cursor.match(/\s/)) {
       whitespace_count++;
     } else {

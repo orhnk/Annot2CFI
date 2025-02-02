@@ -3,7 +3,9 @@
     "epub-cfi-generator": "^0.2.2",
     "he": "^1.2.0",
     "p-limit": "^6.1.0",
+    "readium-cfi-js": "^1.0.0-alpha.1",
     "readline-sync": "^1.4.10",
-    "sqlite3": "^5.1.7"
+    "sqlite3": "^5.1.7",
+    "xmldom": "^0.6.0"
   }
 }

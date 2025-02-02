@@ -30,12 +30,26 @@ async function loadCachedPaths() {
 // Save updated cache asynchronously
 async function saveCachedPaths(volumeIdPaths) {
   try {
+    // Write the book paths to the DB.
     await fs.promises.writeFile(
       cacheFilePath,
       JSON.stringify(volumeIdPaths, null, 2),
     );
   } catch (e) {
     console.error("Error saving cache file:", e);
+  }
+
+  try {
+    // Copy books for backup
+    const backupPath = path.resolve(__dirname, "data", "books");
+    await fs.promises.mkdir(backupPath, { recursive: true });
+    for (const volumeId of Object.keys(volumeIdPaths)) {
+      const sourcePath = volumeIdPaths[volumeId];
+      const destinationPath = path.join(backupPath, path.basename(sourcePath));
+      await fs.promises.copyFile(sourcePath, destinationPath);
+    }
+  } catch (e) {
+    console.error("Error backing up books:", e);
   }
 }
 

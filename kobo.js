@@ -51,7 +51,9 @@ async function processBookmark(row, volumePath, searchEpub) {
       modified: "", // Optional field
     };
   } catch (err) {
-    throw new Error(`Error while searching for CFI: ${err.message}`);
+    throw new Error(
+      `Error while searching for CFI: ${err.message} in ${volumePath}`,
+    );
   }
 }
 
