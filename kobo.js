@@ -1,6 +1,9 @@
 //kobo.js
 const sqlite3 = require("sqlite3");
 const path = require("path");
+const fs = require("fs").promises;
+
+const copiedVolumes = new Set();
 
 // Function to open the database and fetch bookmarks
 async function fetchBookmarks(dbFilePath) {
@@ -32,32 +35,49 @@ async function fetchBookmarks(dbFilePath) {
   });
 }
 
-// Function to process a single bookmark
-async function processBookmark(row, volumePath, searchEpub) {
-  const { VolumeID: volumeId, Text: text, Annotation: annotation } = row;
-  const cleanedAnnotation = annotation || "";
-
+// New function: Copy book to archive directory
+async function copyToArchive(sourcePath, destDir = "data/books") {
   try {
-    const cfi = await searchEpub(volumePath, text);
-    console.log(`Found CFI for: ${cfi}`);
+    const resolvedDestDir = path.resolve(destDir);
+    await fs.mkdir(resolvedDestDir, { recursive: true });
 
-    // Return the annotation data in the specified JSON format
-    return {
-      value: cfi,
-      color: "yellow", // Default color, can be customized
-      text,
-      note: cleanedAnnotation,
-      created: new Date().toISOString(), // Current date-time in ISO format
-      modified: "", // Optional field
-    };
+    const filename = path.basename(sourcePath);
+    const destPath = path.join(resolvedDestDir, filename);
+
+    await fs.copyFile(sourcePath, destPath);
+    console.log(`Archived book to: ${destPath}`);
   } catch (err) {
-    throw new Error(
-      `Error while searching for CFI: ${err.message} in ${volumePath}`,
-    );
+    throw new Error(`Failed to archive ${sourcePath}: ${err.message}`);
   }
 }
 
-// Exported functions
+// Modified bookmark processor with archiving
+async function processBookmark(row, volumePath, searchEpub) {
+  const { Text: text, Annotation: annotation } = row;
+  const cleanedAnnotation = annotation || "";
+
+  try {
+    // Archive book if not already copied
+    if (!copiedVolumes.has(volumePath)) {
+      await copyToArchive(volumePath);
+      copiedVolumes.add(volumePath);
+    }
+
+    const cfi = await searchEpub(volumePath, text);
+    return {
+      value: cfi,
+      color: "yellow",
+      text,
+      note: cleanedAnnotation,
+      created: new Date().toISOString(),
+      modified: "",
+    };
+  } catch (err) {
+    throw new Error(`Processing failed for ${volumePath}: ${err.message}`);
+  }
+}
+
+// Rest of the original code remains unchanged
 module.exports = {
   fetchBookmarks,
   processBookmark,

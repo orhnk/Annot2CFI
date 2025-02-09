@@ -192,7 +192,7 @@ function findMatchWithOptionalSpaces(query, text) {
     }
   }
 
-  return -1;
+  return null;
 }
 
 const searchCfiData = (cfiData, searchText) => {
@@ -232,7 +232,7 @@ const searchCfiData = (cfiData, searchText) => {
     normalizeWhitespace(combinedText),
   );
 
-  if (startIdx === -1) {
+  if (!startIdx) {
     console.log("----------------------------------------------");
     console.log("| Couldn't find the text below from the epub |");
     console.log("----------------------------------------------");

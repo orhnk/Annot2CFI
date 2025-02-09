@@ -1,91 +1,100 @@
-//index.js
+// index.js
 const fs = require("fs");
 const path = require("path");
 const readline = require("readline");
+const { spawn } = require("child_process");
+const { URL } = require("url");
 const { fetchBookmarks, processBookmark } = require("./kobo");
 const { searchEpub } = require("./epubSearcher");
 
-// File path to store the cached paths
 const cacheFilePath = path.resolve(
   __dirname,
   "data",
   "cache",
   "volumePathsCache.json",
 );
+const configPath = path.resolve(__dirname, "data", "config.json");
 
-// Load cached paths asynchronously
+async function getCalibrePath(rl) {
+  let config = {};
+  if (fs.existsSync(configPath)) {
+    try {
+      const data = await fs.promises.readFile(configPath, "utf-8");
+      config = JSON.parse(data);
+      if (config.calibrePath) return config.calibrePath;
+    } catch (e) {
+      console.error("Error reading config:", e);
+    }
+  }
+
+  return new Promise((resolve) => {
+    rl.question("Enter your Calibre library path: ", async (calibrePath) => {
+      calibrePath = calibrePath.trim();
+      if (!calibrePath) {
+        console.log("Path required!");
+        return resolve(await getCalibrePath(rl));
+      }
+      config.calibrePath = calibrePath;
+      await fs.promises.mkdir(path.dirname(configPath), { recursive: true });
+      await fs.promises.writeFile(configPath, JSON.stringify(config, null, 2));
+      resolve(calibrePath);
+    });
+  });
+}
+
+async function searchEpubInCalibre(calibrePath, targetFileName) {
+  return new Promise((resolve, reject) => {
+    const rg = spawn("rg", ["--files", "-g", "*.epub", calibrePath]);
+    let data = "";
+
+    rg.stdout.on("data", (chunk) => data += chunk);
+    rg.on("close", (code) => {
+      if (code === 0 || code === 1) {
+        const files = data.split("\n").filter(Boolean);
+        const normalizedTarget = targetFileName.toLowerCase().trim();
+
+        const matches = files.filter((file) => {
+          const epubBase = path.basename(file, ".epub").toLowerCase().trim();
+          return epubBase === normalizedTarget;
+        });
+
+        resolve(matches);
+      } else {
+        reject(new Error("ripgrep failed"));
+      }
+    });
+    rg.on("error", reject);
+  });
+}
+
 async function loadCachedPaths() {
   if (fs.existsSync(cacheFilePath)) {
     try {
       const data = await fs.promises.readFile(cacheFilePath, "utf-8");
       return JSON.parse(data);
     } catch (e) {
-      console.error("Error reading cache file:", e);
+      console.error("Error reading cache:", e);
       return {};
     }
   }
   return {};
 }
 
-// Save updated cache asynchronously
 async function saveCachedPaths(volumeIdPaths) {
-  try {
-    // Write the book paths to the DB.
-    await fs.promises.writeFile(
-      cacheFilePath,
-      JSON.stringify(volumeIdPaths, null, 2),
-    );
-  } catch (e) {
-    console.error("Error saving cache file:", e);
-  }
-
-  try {
-    // Copy books for backup
-    const backupPath = path.resolve(__dirname, "data", "books");
-    await fs.promises.mkdir(backupPath, { recursive: true });
-    for (const volumeId of Object.keys(volumeIdPaths)) {
-      const sourcePath = volumeIdPaths[volumeId];
-      const destinationPath = path.join(backupPath, path.basename(sourcePath));
-      await fs.promises.copyFile(sourcePath, destinationPath);
-    }
-  } catch (e) {
-    console.error("Error backing up books:", e);
-  }
+  await fs.promises.writeFile(
+    cacheFilePath,
+    JSON.stringify(volumeIdPaths, null, 2),
+  );
 }
 
-// Prompt the user for a file path
-function askForPath(volumeId, rl) {
-  return new Promise((resolve) => {
-    rl.question(
-      `Please enter the correct file path for VolumeID ${volumeId}: `,
-      (userInputPath) => {
-        if (!userInputPath) {
-          console.log("You must provide a valid file path.");
-          return askForPath(volumeId, rl); // Re-prompt if the input is invalid
-        }
-        resolve(userInputPath);
-      },
-    );
-  });
-}
-
-// Extract the filename from the mapped path
 function getOutputFileNameFromMapping(volumeIdPaths, volumeId) {
-  const filePath = volumeIdPaths[volumeId];
-
-  if (!filePath) {
-    throw new Error(`Path not found for VolumeID: ${volumeId}`);
-  }
-
-  // Extract file base name and sanitize
-  const baseName = path.basename(filePath, path.extname(filePath)); // Extract base name like "Sozler - Bediuzzaman Said Nursi"
-  const sanitizedBaseName = baseName.replace(/[^a-zA-Z0-9_\-]/g, "_"); // Replace unsafe characters
-  return `${__dirname}/data/annotations/annotations_for_${sanitizedBaseName}.json`; // Create output file name
+  const epubPath = volumeIdPaths[volumeId];
+  const fileName = path.basename(epubPath, ".epub") + "_annotations.json";
+  return path.resolve(__dirname, "data", "annotations", fileName);
 }
 
 async function main() {
   const dbFilePath = process.argv[2];
-
   if (!dbFilePath) {
     console.error("Usage: node index.js <dbFilePath>");
     process.exit(1);
@@ -96,83 +105,109 @@ async function main() {
     output: process.stdout,
   });
 
-  const volumeIdPaths = await loadCachedPaths(); // Make sure to wait for the async load
+  const calibrePath = await getCalibrePath(rl);
+  const volumeIdPaths = await loadCachedPaths();
+  const result = {};
 
-  const result = {}; // Object to classify bookmarks by book (VolumeID)
-  let totalAnnotations = 0; // Total annotations from the database
-  let matchedAnnotations = 0; // Annotations that are successfully processed and saved
+  let totalAnnotations = 0;
+  let matchedAnnotations = 0;
 
   try {
     const rows = await fetchBookmarks(dbFilePath);
-    totalAnnotations = rows.length; // Total number of annotations in the database
+    totalAnnotations = rows.length;
 
     for (const row of rows) {
       const volumeId = row.VolumeID;
-
-      // Ask the user for the file path if not cached
       if (!volumeIdPaths[volumeId]) {
         try {
-          volumeIdPaths[volumeId] = await askForPath(volumeId, rl); // Sequential prompt
-        } catch (error) {
-          console.error(`Error prompting for path: ${error.message}`);
-          continue; // Skip to the next iteration if the path request fails
+          const parsedUrl = new URL(volumeId);
+          const decodedPathname = decodeURIComponent(parsedUrl.pathname);
+          const fileNameWithExt = path.basename(decodedPathname);
+
+          const targetFileName = fileNameWithExt
+            .replace(/(\.kepub)?\.epub$/i, "")
+            .trim();
+
+          console.log(`Searching for "${targetFileName}"...`);
+
+          const matches = await searchEpubInCalibre(
+            calibrePath,
+            targetFileName,
+          );
+
+          if (matches.length === 1) {
+            volumeIdPaths[volumeId] = matches[0];
+          } else if (matches.length > 1) {
+            console.log(`Multiple matches for "${targetFileName}":`);
+            matches.forEach((match, i) => console.log(`${i + 1}: ${match}`));
+            const choice = parseInt(
+              await new Promise((r) =>
+                rl.question("Select file (number): ", r)
+              ),
+              10,
+            );
+            if (choice >= 1 && choice <= matches.length) {
+              volumeIdPaths[volumeId] = matches[choice - 1];
+            } else {
+              throw new Error("Invalid selection");
+            }
+          } else {
+            throw new Error(`No matches found for "${targetFileName}"`);
+          }
+        } catch (e) {
+          console.log(`Error for VolumeID ${volumeId}: ${e.message}`);
+          const response = await new Promise((r) =>
+            rl.question(`Skip this book (s) or provide a path (p)? (s/p) `, r)
+          );
+          const trimmedResponse = response.trim().toLowerCase();
+          if (trimmedResponse === "s") {
+            volumeIdPaths[volumeId] = "skip";
+          } else {
+            const manualPath = await new Promise((r) =>
+              rl.question(`Enter path for ${volumeId}: `, r)
+            );
+            volumeIdPaths[volumeId] = manualPath.trim();
+          }
         }
+      }
+
+      const epubPath = volumeIdPaths[volumeId];
+      if (epubPath === "skip") {
+        console.log(`Skipping annotations for VolumeID ${volumeId}`);
+        continue;
       }
 
       try {
         const annotation = await processBookmark(
           row,
-          volumeIdPaths[volumeId],
+          epubPath,
           searchEpub,
         );
-
         if (annotation) {
-          // If no array exists for this VolumeID, create one
-          if (!result[volumeId]) {
-            result[volumeId] = [];
-          }
-
-          result[volumeId].push(annotation); // Add annotation under the correct VolumeID
-          matchedAnnotations++; // Increment matched annotations count
+          (result[volumeId] ??= []).push(annotation);
+          matchedAnnotations++;
         }
       } catch (err) {
         console.error(`Error processing bookmark: ${err.message}`);
       }
     }
 
-    // Save updated cache
     await saveCachedPaths(volumeIdPaths);
 
-    // Write the annotations for each VolumeID separately with "annotations" node
     for (const volumeId of Object.keys(result)) {
-      const outputFileName = getOutputFileNameFromMapping(
-        volumeIdPaths,
-        volumeId,
-      );
-      const annotatedData = { annotations: result[volumeId] }; // Wrap the results in the "annotations" key
+      const outputFile = getOutputFileNameFromMapping(volumeIdPaths, volumeId);
       await fs.promises.writeFile(
-        outputFileName,
-        JSON.stringify(annotatedData, null, 2),
+        outputFile,
+        JSON.stringify({ annotations: result[volumeId] }, null, 2),
       );
-      console.log(
-        `Annotations saved for VolumeID ${volumeId}: ${outputFileName}`,
-      );
+      console.log(`Annotations saved: ${outputFile}`);
     }
 
-    // Assertion to ensure all annotations have been processed
-    if (totalAnnotations !== matchedAnnotations) {
-      console.error(
-        `Mismatch: Total annotations in database (${totalAnnotations}) do not match processed annotations (${matchedAnnotations})`,
-      );
-      process.exit(1); // Exit with error code if there's a mismatch
-    }
-
-    // Display the summary of annotations written
     console.log(
-      `Successfully written ${matchedAnnotations} out of ${totalAnnotations} annotations.`,
+      `Processed ${matchedAnnotations}/${totalAnnotations} annotations`,
     );
   } catch (err) {
-    console.error(err.message);
+    console.error(err);
   } finally {
     rl.close();
   }
