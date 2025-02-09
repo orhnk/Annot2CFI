@@ -1,4 +1,3 @@
-// index.js
 const fs = require("fs");
 const path = require("path");
 const readline = require("readline");
@@ -52,12 +51,10 @@ async function searchEpubInCalibre(calibrePath, targetFileName) {
       if (code === 0 || code === 1) {
         const files = data.split("\n").filter(Boolean);
         const normalizedTarget = targetFileName.toLowerCase().trim();
-
         const matches = files.filter((file) => {
           const epubBase = path.basename(file, ".epub").toLowerCase().trim();
           return epubBase === normalizedTarget;
         });
-
         resolve(matches);
       } else {
         reject(new Error("ripgrep failed"));
@@ -71,7 +68,16 @@ async function loadCachedPaths() {
   if (fs.existsSync(cacheFilePath)) {
     try {
       const data = await fs.promises.readFile(cacheFilePath, "utf-8");
-      return JSON.parse(data);
+      const oldCache = JSON.parse(data);
+
+      return Object.fromEntries(
+        Object.entries(oldCache).map(([k, v]) => {
+          if (typeof v === "string") {
+            return [k, v === "skip" ? "skip" : { path: v, archived: false }];
+          }
+          return [k, v];
+        }),
+      );
     } catch (e) {
       console.error("Error reading cache:", e);
       return {};
@@ -87,10 +93,53 @@ async function saveCachedPaths(volumeIdPaths) {
   );
 }
 
+async function copyToArchive(sourcePath) {
+  const destDir = path.resolve(__dirname, "data", "books");
+  await fs.promises.mkdir(destDir, { recursive: true });
+  const destPath = path.join(destDir, path.basename(sourcePath));
+
+  try {
+    await fs.promises.copyFile(sourcePath, destPath);
+    console.log(`Archived book to: ${destPath}`);
+    return true;
+  } catch (err) {
+    throw new Error(`Failed to archive ${sourcePath}: ${err.message}`);
+  }
+}
+
 function getOutputFileNameFromMapping(volumeIdPaths, volumeId) {
-  const epubPath = volumeIdPaths[volumeId];
+  const entry = volumeIdPaths[volumeId];
+  if (!entry || entry === "skip") return null;
+
+  const epubPath = entry.path;
   const fileName = path.basename(epubPath, ".epub") + "_annotations.json";
   return path.resolve(__dirname, "data", "annotations", fileName);
+}
+
+async function archiveAllCachedBooks(volumeIdPaths) {
+  console.log("\nArchiving all books from cache...");
+  let archivedCount = 0;
+  const totalBooks =
+    Object.values(volumeIdPaths).filter((v) => v !== "skip").length;
+
+  for (const [volumeId, entry] of Object.entries(volumeIdPaths)) {
+    if (entry === "skip" || entry.archived) continue;
+
+    try {
+      await copyToArchive(entry.path);
+      entry.archived = true;
+      archivedCount++;
+      console.log(
+        `[${archivedCount}/${totalBooks}] Archived ${
+          path.basename(entry.path)
+        }`,
+      );
+    } catch (err) {
+      console.error(`Failed to archive ${entry.path}: ${err.message}`);
+    }
+  }
+
+  return archivedCount;
 }
 
 async function main() {
@@ -104,39 +153,41 @@ async function main() {
     input: process.stdin,
     output: process.stdout,
   });
-
   const calibrePath = await getCalibrePath(rl);
-  const volumeIdPaths = await loadCachedPaths();
+  let volumeIdPaths = await loadCachedPaths();
   const result = {};
 
   let totalAnnotations = 0;
   let matchedAnnotations = 0;
+  const uniqueVolumeIds = new Set();
 
   try {
+    // Process current database annotations
     const rows = await fetchBookmarks(dbFilePath);
     totalAnnotations = rows.length;
 
     for (const row of rows) {
       const volumeId = row.VolumeID;
+      uniqueVolumeIds.add(volumeId);
+
       if (!volumeIdPaths[volumeId]) {
         try {
           const parsedUrl = new URL(volumeId);
           const decodedPathname = decodeURIComponent(parsedUrl.pathname);
           const fileNameWithExt = path.basename(decodedPathname);
-
-          const targetFileName = fileNameWithExt
-            .replace(/(\.kepub)?\.epub$/i, "")
-            .trim();
+          const targetFileName = fileNameWithExt.replace(
+            /(\.kepub)?\.epub$/i,
+            "",
+          ).trim();
 
           console.log(`Searching for "${targetFileName}"...`);
-
           const matches = await searchEpubInCalibre(
             calibrePath,
             targetFileName,
           );
 
           if (matches.length === 1) {
-            volumeIdPaths[volumeId] = matches[0];
+            volumeIdPaths[volumeId] = { path: matches[0], archived: false };
           } else if (matches.length > 1) {
             console.log(`Multiple matches for "${targetFileName}":`);
             matches.forEach((match, i) => console.log(`${i + 1}: ${match}`));
@@ -147,7 +198,10 @@ async function main() {
               10,
             );
             if (choice >= 1 && choice <= matches.length) {
-              volumeIdPaths[volumeId] = matches[choice - 1];
+              volumeIdPaths[volumeId] = {
+                path: matches[choice - 1],
+                archived: false,
+              };
             } else {
               throw new Error("Invalid selection");
             }
@@ -166,21 +220,25 @@ async function main() {
             const manualPath = await new Promise((r) =>
               rl.question(`Enter path for ${volumeId}: `, r)
             );
-            volumeIdPaths[volumeId] = manualPath.trim();
+            volumeIdPaths[volumeId] = {
+              path: manualPath.trim(),
+              archived: false,
+            };
           }
         }
       }
 
-      const epubPath = volumeIdPaths[volumeId];
-      if (epubPath === "skip") {
+      const cacheEntry = volumeIdPaths[volumeId];
+      if (cacheEntry === "skip") {
         console.log(`Skipping annotations for VolumeID ${volumeId}`);
         continue;
       }
 
+      // Process bookmark
       try {
         const annotation = await processBookmark(
           row,
-          epubPath,
+          cacheEntry.path,
           searchEpub,
         );
         if (annotation) {
@@ -192,20 +250,41 @@ async function main() {
       }
     }
 
+    // Archive all books from cache (including previous entries)
+    const newlyArchived = await archiveAllCachedBooks(volumeIdPaths);
     await saveCachedPaths(volumeIdPaths);
 
+    // Save annotations
     for (const volumeId of Object.keys(result)) {
       const outputFile = getOutputFileNameFromMapping(volumeIdPaths, volumeId);
-      await fs.promises.writeFile(
-        outputFile,
-        JSON.stringify({ annotations: result[volumeId] }, null, 2),
-      );
-      console.log(`Annotations saved: ${outputFile}`);
+      if (outputFile) {
+        await fs.promises.writeFile(
+          outputFile,
+          JSON.stringify({ annotations: result[volumeId] }, null, 2),
+        );
+        console.log(`Annotations saved: ${outputFile}`);
+      }
     }
 
+    // Statistics
+    const totalBooks = Object.values(volumeIdPaths).filter((v) =>
+      v !== "skip"
+    ).length;
+    const skippedBooks = Object.values(volumeIdPaths).filter((v) =>
+      v === "skip"
+    ).length;
+    const archivedBooks =
+      Object.values(volumeIdPaths).filter((v) => v !== "skip" && v.archived)
+        .length;
+
+    console.log(`\nFinal Statistics:`);
     console.log(
-      `Processed ${matchedAnnotations}/${totalAnnotations} annotations`,
+      `- Processed ${matchedAnnotations}/${totalAnnotations} annotations`,
     );
+    console.log(`- Total books in cache: ${totalBooks + skippedBooks}`);
+    console.log(`  ├─ Successfully archived: ${archivedBooks}/${totalBooks}`);
+    console.log(`  └─ Skipped books: ${skippedBooks}`);
+    console.log(`- Newly archived in this session: ${newlyArchived}`);
   } catch (err) {
     console.error(err);
   } finally {
