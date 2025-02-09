@@ -136,8 +136,8 @@ const formatEpubCfi = (startCfi, endCfi, startOffset, endOffset) => {
 };
 
 const normalizeWhitespace = (text) => {
-  //// Decode HTML entities (e.g., &nbsp; becomes space, &amp; becomes &)
-  //text = he.decode(text); // Results slightly off set char offsets.
+  // Decode HTML entities (e.g., &nbsp; becomes space, &amp; becomes &)
+  text = he.decode(text); // Results slightly off set char offsets.
 
   //// Normalize spaces (replace multiple spaces with a single space) and trim the text
   //return text.replace(/\s+/g, " ").trim(); // Replace multiple spaces with a single space and trim the text
@@ -157,40 +157,44 @@ function findMatchWithOptionalSpaces(query, text) {
   let query_idx = 0;
   let text_idx = 0;
   let whitespace_count = 0;
+  let cursor = "";
+  let debug_text = "";
+  let debug = false;
+  let debug_counter = 0;
 
   for (; text_idx < text.length; text_idx++) {
-    const cursor = text[text_idx];
+    cursor = text[text_idx];
 
     if (cursor === normalizedQuery[query_idx]) {
       query_idx++;
-    } else if (cursor === normalizedQuery[0]) { // in some rare cases. Q: "hello" Txt: "h hello" can miss.
-      // NOTE: This is a dirty fix. It will only work for two character repeating texts.
-      // Q: "hello"
-      // T: "hell hello"
-      // will mismatch.
-      //
-      // The approach that may work is retrying to match the word after every mismatch (ETIRE PRHASE).
-      // I just fixed it currently as needed. If it becomes a problem, I will implement the above approach.
-      for (let i = text_idx; i > text_idx - 10; i++) { // Allow 10 characters of whitespace as a threshold
-        if (text[i].match(/\s/)) {
-          continue;
-        } else if (text[i] === normalizedQuery[0]) {
-          query_idx = 1;
-          text_idx = i;
-          break;
-        }
-      }
     } else if (cursor.match(/\s/)) {
       whitespace_count++;
+    } else if (cursor === normalizedQuery[0]) { // in some rare cases. Q: "hello" Txt: "h hello" can miss.
+      query_idx = 1;
     } else {
       query_idx = 0; // Reset the query. We may have future matches.
       whitespace_count = 0;
+      if (debug) {
+        debug_counter++;
+      }
     }
 
+    if (query_idx > 6) {
+      debug = true;
+    }
+
+    if (debug && debug_counter < 10) {
+      debug_text += text[text_idx + whitespace_count];
+      debug_text += " ";
+      debug_text += query[query_idx];
+      debug_text += "\n";
+    }
     if (query_idx === normalizedQuery.length) {
       return text_idx - (query_idx + whitespace_count) + 1; // not sure about the +1. But it fixes the leading text search test
     }
   }
+
+  console.log("Debug text: ", debug_text);
 
   return null;
 }
